@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { supabase } from './services/supabase';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import './App.css';
 
@@ -7,39 +8,92 @@ export default function AcademiaFitApp() {
   const [carregando, setCarregando] = useState(false);
   const [mensagem, setMensagem] = useState('');
 
-  async function registrarShape(origem) {
-    if (carregando) return;
-    setCarregando(true);
-    setMensagem('');
-    try {
-      const imagem = await Camera.getPhoto({
-        quality: 85,
-        resultType: CameraResultType.Uri,
-        source: origem,
-        allowEditing: true,
-        promptLabelHeader: 'Registrar evolução',
-        promptLabelPhoto: 'Escolher da galeria',
-        promptLabelPicture: 'Tirar foto agora',
-        saveToGallery: false,
-      });
-      if (!imagem?.webPath) {
-        setMensagem('Não foi possível carregar a foto. Tente novamente.');
-        return;
-      }
-      setFotos((lista) => [{
-        id: `${Date.now()}-${Math.random()}`,
-        webPath: imagem.webPath,
-        data: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }),
-        horario: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-      }, ...lista]);
-      setMensagem('Foto adicionada à sua linha do tempo!');
-    } catch (erro) {
-      console.warn('Captura cancelada ou indisponível:', erro);
-      setMensagem('Registro cancelado. Quando quiser, tente novamente.');
-    } finally {
-      setCarregando(false);
+  
+async function registrarShape(origem) {
+  if (carregando) return;
+
+  setCarregando(true);
+  setMensagem('');
+
+  try {
+    // 1. Captura a foto pela câmera ou galeria
+    const imagem = await Camera.getPhoto({
+      quality: 70,
+      resultType: CameraResultType.Uri,
+      source: origem,
+      allowEditing: true,
+      promptLabelHeader: 'Registrar evolução',
+      promptLabelPhoto: 'Escolher da galeria',
+      promptLabelPicture: 'Tirar foto agora',
+      saveToGallery: false,
+    });
+
+    if (!imagem?.webPath) {
+      setMensagem('Não foi possível carregar a foto.');
+      return;
     }
+
+    // 2. Converte a imagem para Blob
+    const resposta = await fetch(imagem.webPath);
+    const blob = await resposta.blob();
+
+    // 3. Cria um nome único para o arquivo
+    const nomeArquivo = `foto-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}.jpg`;
+
+    // 4. Envia a foto para o Supabase Storage
+    setMensagem('Enviando foto para a nuvem...');
+
+    const { data, error } = await supabase.storage
+      .from('fotos-camera')
+      .upload(nomeArquivo, blob, {
+        contentType: blob.type || 'image/jpeg',
+        upsert: false,
+      });
+
+    if (error) throw error;
+
+    // 5. Obtém a URL pública da imagem
+    const { data: urlData } = supabase.storage
+      .from('fotos-camera')
+      .getPublicUrl(data.path);
+
+    const urlPublica = urlData.publicUrl;
+
+    // 6. Salva a URL no estado do React
+    const agora = new Date();
+
+    setFotos((lista) => [
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        webPath: urlPublica,
+        publicUrl: urlPublica,
+        caminhoStorage: data.path,
+        data: agora.toLocaleDateString('pt-BR', {
+          day: '2-digit',
+          month: 'long',
+          year: 'numeric',
+        }),
+        horario: agora.toLocaleTimeString('pt-BR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      },
+      ...lista,
+    ]);
+
+    setMensagem('Foto enviada para o Supabase com sucesso!');
+  } catch (erro) {
+    console.error('Erro ao capturar ou enviar foto:', erro);
+
+    setMensagem(
+      erro?.message || 'Operação cancelada ou falha no envio da foto.'
+    );
+  } finally {
+    setCarregando(false);
   }
+}
 
   function removerFoto(id) {
     setFotos((lista) => lista.filter((foto) => foto.id !== id));
